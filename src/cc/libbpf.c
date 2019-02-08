@@ -824,8 +824,8 @@ int bpf_attach_kprobe(int progfd, enum bpf_probe_attach_type attach_type,
       snprintf(buf, sizeof(buf), "p:%ss/%s %s+%"PRIu64,
                event_type, event_alias, fn_name, fn_offset);
     else
-      snprintf(buf, sizeof(buf), "%c:%ss/%s %s",
-               attach_type == BPF_PROBE_ENTRY ? 'p' : 'r',
+      snprintf(buf, sizeof(buf), "%s:%ss/%s %s",
+               attach_type == BPF_PROBE_ENTRY ? "p" : "r100",
                event_type, event_alias, fn_name);
 
     if (write(kfd, buf, strlen(buf)) < 0) {
