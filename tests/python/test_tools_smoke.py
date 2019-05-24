@@ -27,9 +27,15 @@ class SmokeTests(TestCase):
     # to be killed in case of a hard hang.
     def run_with_duration(self, command, timeout=10):
         full_command = TOOLS_DIR + command
-        self.assertEqual(0,     # clean exit
-                subprocess.call("timeout -s KILL %ds %s > /dev/null" %
-                                (timeout, full_command), shell=True))
+        rc = subprocess.call("timeout -s KILL %ds %s > /dev/null" %
+                                (timeout, full_command), shell=True)
+        # Retrieve and rename generated object file.
+        if os.path.isfile("/tmp/bcc_object_file.o"):
+            script_name = command.split(" ")[0]
+            object_file = re.sub(r'\.(py|sh)', ".o", script_name)
+            object_file = "/tmp/%s" % object_file.replace("lib/", "")
+            os.rename("/tmp/bcc_object_file.o", object_file)
+        self.assertEqual(0, rc)
 
     # Use this for commands that don't have a built-in timeout, so we have
     # to Ctrl-C out of them by sending SIGINT. If that still doesn't stop
@@ -40,6 +46,12 @@ class SmokeTests(TestCase):
         signal = "KILL" if kill else "INT"
         rc = subprocess.call("timeout -s %s -k %ds %ds %s > /dev/null" %
                 (signal, kill_timeout, timeout, full_command), shell=True)
+        # Retrieve and rename generated object file.
+        if os.path.isfile("/tmp/bcc_object_file.o"):
+            script_name = command.split(" ")[0]
+            object_file = re.sub(r'\.(py|sh)', ".o", script_name)
+            object_file = "/tmp/%s" % object_file.replace("lib/", "")
+            os.rename("/tmp/bcc_object_file.o", object_file)
         # timeout returns 124 if the program did not terminate prematurely,
         # and returns 137 if we used KILL instead of INT. So there are three
         # sensible scenarios:
