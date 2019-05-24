@@ -45,15 +45,20 @@ class TracepointTypeVisitor :
   explicit TracepointTypeVisitor(clang::ASTContext &C,
                                  clang::Rewriter &rewriter);
   bool VisitFunctionDecl(clang::FunctionDecl *D);
+  void set_fn(std::string fn) { functions_.insert(fn); }
 
  private:
   std::string GenerateTracepointStruct(clang::SourceLocation loc,
           std::string const& category, std::string const& event);
+  clang::SourceRange expansionRange(clang::SourceRange range);
+  clang::SourceLocation expansionLoc(clang::SourceLocation loc);
 
   clang::ASTContext &C;
   clang::DiagnosticsEngine &diag_;
   clang::Rewriter &rewriter_;
   llvm::raw_ostream &out_;
+  std::string current_fn_;
+  std::set<std::string> functions_; // functions to duplicate
 };
 
 class TracepointTypeConsumer : public clang::ASTConsumer {
@@ -63,6 +68,7 @@ class TracepointTypeConsumer : public clang::ASTConsumer {
   bool HandleTopLevelDecl(clang::DeclGroupRef Group) override;
  private:
   TracepointTypeVisitor visitor_;
+  clang::Rewriter &rewriter_;
 };
 
 class TracepointFrontendAction : public clang::ASTFrontendAction {

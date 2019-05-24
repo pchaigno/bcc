@@ -53,6 +53,8 @@ enum {
   DEBUG_BPF_REGISTER_STATE = 0x10,
   // Debug BTF.
   DEBUG_BTF = 0x20,
+  // Output object file.
+  DEBUG_OBJECT_FILE = 0x40,
 };
 
 class TableDesc;
@@ -88,6 +90,7 @@ class BPFModule {
                        const void *val);
   void load_btf(sec_map_def &sections);
   int load_maps(sec_map_def &sections);
+  int write_object_to_disk(llvm::Module &Module, const char *filepath);
 
  public:
   BPFModule(unsigned flags, TableStorage *ts = nullptr, bool rw_engine_enabled = true,
