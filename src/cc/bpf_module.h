@@ -53,6 +53,8 @@ enum {
   DEBUG_BPF_REGISTER_STATE = 0x10,
   // Debug BTF.
   DEBUG_BTF = 0x20,
+  // Output object file.
+  DEBUG_OBJECT_FILE = 0x40,
 };
 
 class TableDesc;
@@ -92,6 +94,7 @@ class BPFModule {
                   std::map<int, int> &map_fds,
                   std::map<std::string, int> &inner_map_fds,
                   bool for_inner_map);
+  int write_object_to_disk(llvm::Module &Module, const char *filepath);
 
  public:
   BPFModule(unsigned flags, TableStorage *ts = nullptr, bool rw_engine_enabled = true,

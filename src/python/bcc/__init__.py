@@ -59,6 +59,8 @@ DEBUG_SOURCE = 0x8
 DEBUG_BPF_REGISTER_STATE = 0x10
 # Debug BTF.
 DEBUG_BTF = 0x20
+# Output object file.
+DEBUG_OBJECT_FILE = 0x40
 
 class SymbolCache(object):
     def __init__(self, pid):
@@ -370,6 +372,10 @@ class BPF(object):
         return fns
 
     def load_func(self, func_name, prog_type, device = None):
+        # Add __fake__ marker if not already present, so that
+        # search in existing functions succeeds.
+        if not "__fake__" in func_name:
+            func_name += "__fake__"
         func_name = _assert_is_bytes(func_name)
         if func_name in self.funcs:
             return self.funcs[func_name]
@@ -1106,6 +1112,9 @@ class BPF(object):
     def _trace_autoload(self):
         for i in range(0, lib.bpf_num_functions(self.module)):
             func_name = lib.bpf_function_name(self.module, i)
+            # Remove __fake__ marker from source code as function
+            # names are used to find the appropriate attach point.
+            func_name = func_name.replace("__fake__", "")
             if func_name.startswith(b"kprobe__"):
                 fn = self.load_func(func_name, BPF.KPROBE)
                 self.attach_kprobe(

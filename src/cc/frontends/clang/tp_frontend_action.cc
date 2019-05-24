@@ -198,39 +198,107 @@ static inline bool _is_tracepoint_struct_type(string const& type_name,
   return true;
 }
 
+SourceRange
+TracepointTypeVisitor::expansionRange(SourceRange range) {
+#if LLVM_MAJOR_VERSION >= 7
+  return rewriter_.getSourceMgr().getExpansionRange(range).getAsRange();
+#else
+  return rewriter_.getSourceMgr().getExpansionRange(range);
+#endif
+}
+
+SourceLocation
+TracepointTypeVisitor::expansionLoc(SourceLocation loc) {
+  return rewriter_.getSourceMgr().getExpansionLoc(loc);
+}
 
 bool TracepointTypeVisitor::VisitFunctionDecl(FunctionDecl *D) {
-  if (D->isExternallyVisible() && D->hasBody()) {
-    // If this function has a tracepoint structure as an argument,
-    // add that structure declaration based on the structure name.
-    for (auto it = D->param_begin(); it != D->param_end(); ++it) {
-      auto arg = *it;
-      auto type = arg->getType();
-      if (type->isPointerType() &&
-          type->getPointeeType()->isStructureOrClassType()) {
-        auto type_name = type->getPointeeType().getAsString();
-        string tp_cat, tp_evt;
-        if (_is_tracepoint_struct_type(type_name, tp_cat, tp_evt)) {
-          string tp_struct = GenerateTracepointStruct(
-              GET_BEGINLOC(D), tp_cat, tp_evt);
-          // Get the actual function declaration point (the macro instantiation
-          // point if using the TRACEPOINT_PROBE macro instead of the macro
-          // declaration point in bpf_helpers.h).
-          auto insert_loc = GET_BEGINLOC(D);
-          insert_loc = rewriter_.getSourceMgr().getFileLoc(insert_loc);
-          rewriter_.InsertText(insert_loc, tp_struct);
+  if (D->hasBody()) {
+    current_fn_ = D->getName();
+
+    // Get the actual function declaration point (the macro instantiation
+    // point if using the TRACEPOINT_PROBE macro instead of the macro
+    // declaration point in bpf_helpers.h).
+    SourceLocation begin_loc = GET_BEGINLOC(D);
+    begin_loc = rewriter_.getSourceMgr().getFileLoc(begin_loc);
+    SourceLocation end_loc = GET_ENDLOC(D);
+    end_loc = rewriter_.getSourceMgr().getFileLoc(end_loc);
+
+    string func_src = rewriter_.getRewrittenText(SourceRange(begin_loc, end_loc));
+
+    if (D->isExternallyVisible()) {
+      // Add __fake__ marker in name for the duplicate function.
+      if (func_src.find("TRACEPOINT_PROBE(") == 0)
+        func_src.replace(0, 17, "TRACEPOINT_PROBE(fake__");
+      else if (func_src.find("RAW_TRACEPOINT_PROBE(") == 0)
+        func_src.replace(0, 21, "RAW_TRACEPOINT_PROBE(fake__");
+      else if (size_t pos = func_src.find('('))
+        if (pos != string::npos)
+          func_src.replace(pos, 1, "__fake__(");
+
+      // If this function has a tracepoint structure as an argument,
+      // add that structure declaration based on the structure name.
+      for (auto it = D->param_begin(); it != D->param_end(); ++it) {
+        auto arg = *it;
+        auto type = arg->getType();
+        if (type->isPointerType() &&
+            type->getPointeeType()->isStructureOrClassType()) {
+          auto type_name = type->getPointeeType().getAsString();
+          string tp_cat, tp_evt;
+          if (_is_tracepoint_struct_type(type_name, tp_cat, tp_evt)) {
+            string tp_struct = GenerateTracepointStruct(GET_BEGINLOC(D), tp_cat, tp_evt);
+            string fake_struct = tp_struct;
+            // Since function name was changed, the tracepoint structure
+            // needs to be as well.
+            fake_struct.replace(0, 19, "struct tracepoint__fake__");
+            tp_struct += "\n" + fake_struct;
+            rewriter_.InsertText(begin_loc, tp_struct);
+          }
+        }
+      }
+    } else {
+      // Add __fake__ marker in name for the duplicate function.
+      size_t pos = func_src.find('(');
+      if (pos != string::npos)
+        func_src.replace(pos, 1, "__fake__(");
+    }
+
+    // Replace all call within the doubled function.
+    for (string fn : functions_) {
+      size_t last_pos = 0, pos = 0;
+      while (last_pos < func_src.length() && pos != string::npos) {
+        pos = func_src.find(fn + "(", last_pos);
+        if (pos != string::npos) {
+          size_t fn_end = pos + fn.length();
+          if (func_src.find("__fake__", fn_end) != fn_end)
+            func_src.replace(fn_end, 0, "__fake__");
+          last_pos = fn_end;
         }
       }
     }
+
+    // Let's double that function and move it to a different section.
+    func_src = "\n\n" + func_src;
+    rewriter_.InsertTextAfterToken(expansionLoc(end_loc), func_src);
   }
   return true;
 }
 
 TracepointTypeConsumer::TracepointTypeConsumer(ASTContext &C, Rewriter &rewriter)
-    : visitor_(C, rewriter) {
+    : visitor_(C, rewriter), rewriter_(rewriter) {
 }
 
 bool TracepointTypeConsumer::HandleTopLevelDecl(DeclGroupRef Group) {
+  FileID main_file_id = rewriter_.getSourceMgr().getMainFileID();
+  // Iterate on all function to identify functions that
+  // will need to be duplicated.
+  for (auto D : Group)
+    if (FunctionDecl *F = dyn_cast<FunctionDecl>(D)) {
+        SourceLocation loc = rewriter_.getSourceMgr().getFileLoc(GET_BEGINLOC(F));
+        FileID file_id = rewriter_.getSourceMgr().getFileID(loc);
+        if (F->hasBody() && file_id == main_file_id)
+          visitor_.set_fn(F->getName());
+    }
   for (auto D : Group)
     visitor_.TraverseDecl(D);
   return true;

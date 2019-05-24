@@ -31,6 +31,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/TargetRegistry.h>
 #include <llvm/Transforms/IPO.h>
 #include <llvm/Transforms/IPO/PassManagerBuilder.h>
 #include <llvm-c/Transforms/IPO.h>
@@ -440,6 +441,38 @@ int BPFModule::load_maps(sec_map_def &sections) {
   return 0;
 }
 
+int BPFModule::write_object_to_disk(Module &mod, const char *filepath) {
+  std::string Error;
+  auto Target = llvm::TargetRegistry::lookupTarget("bpf", Error);
+  if (!Target) {
+    errs() << Error;
+    return 1;
+  }
+
+  llvm::TargetOptions opt;
+  auto RM = Reloc::Model();
+  auto TheTargetMachine = Target->createTargetMachine("bpf", "", "", opt, RM);
+
+  std::error_code EC;
+  raw_fd_ostream dest(filepath, EC, sys::fs::F_None);
+  if (EC) {
+    errs() << "Could not open file: " << EC.message();
+    return 1;
+  }
+
+  legacy::PassManager pass;
+  auto FileType = TargetMachine::CGFT_ObjectFile;
+  if (TheTargetMachine->addPassesToEmitFile(pass, dest, FileType)) {
+    errs() << "TargetMachine can't emit a file of this type";
+    return 1;
+  }
+
+  pass.run(mod);
+  dest.flush();
+
+  return 0;
+}
+
 int BPFModule::finalize() {
   Module *mod = &*mod_;
   sec_map_def tmp_sections,
@@ -482,6 +515,9 @@ int BPFModule::finalize() {
                                 src_dbg_fmap_);
     src_debugger.dump();
   }
+
+  if (int rc = write_object_to_disk(*mod, "/tmp/bcc_object_file.o"))
+    return rc;
 
   load_btf(*sections_p);
   if (load_maps(*sections_p))

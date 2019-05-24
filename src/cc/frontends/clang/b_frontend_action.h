@@ -89,7 +89,8 @@ class BTypeVisitor : public clang::RecursiveASTVisitor<BTypeVisitor> {
   llvm::raw_ostream &out_;  /// for debugging
   std::vector<clang::ParmVarDecl *> fn_args_;
   std::set<clang::Expr *> visited_;
-  std::string current_fn_;
+  std::string current_prog_; // current externally-visible function visited
+  std::string current_fn_; // current function visited
 };
 
 // Do a depth-first search to rewrite all pointers that need to be probed

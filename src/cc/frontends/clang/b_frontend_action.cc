@@ -707,11 +707,29 @@ bool BTypeVisitor::VisitFunctionDecl(FunctionDecl *D) {
   // extracted by the MemoryManager
   auto real_start_loc = rewriter_.getSourceMgr().getFileLoc(GET_BEGINLOC(D));
   if (fe_.is_rewritable_ext_func(D)) {
+    current_prog_ = D->getName();
     current_fn_ = D->getName();
     string bd = rewriter_.getRewrittenText(expansionRange(D->getSourceRange()));
-    fe_.func_src_.set_src(current_fn_, bd);
-    fe_.func_range_[current_fn_] = expansionRange(D->getSourceRange());
-    string attr = string("__attribute__((section(\"") + BPF_FN_PREFIX + D->getName().str() + "\")))\n";
+    fe_.func_src_.set_src(current_prog_, bd);
+    fe_.func_range_[current_prog_] = expansionRange(D->getSourceRange());
+    string attr, name = D->getName().str();
+    if (name.find("fake__") != string::npos) {
+      // section names for bcc
+      attr = string("__attribute__((section(\"") + BPF_FN_PREFIX + name + "\")))\n";
+    } else {
+      // section names for Linux kernel loader
+      if (name.find("raw_tracepoint__") == 0)
+        name.replace(0, 16, "raw_tracepoint/");
+      else if (name.find("tracepoint__") == 0)
+        name.replace(0, 12, "tracepoint/");
+      else if (name.find("kprobe__") == 0)
+        name.replace(0, 8, "kprobe/");
+      else if (name.find("kretprobe__") == 0)
+        name.replace(0, 11, "kretprobe/");
+      else
+        name = "kprobe/" + name;
+      attr = string("__attribute__((section(\"") + name + "\")))\n";
+    }
     rewriter_.InsertText(real_start_loc, attr);
     if (D->param_size() > MAX_CALLING_CONV_REGS + 1) {
       error(GET_BEGINLOC(D->getParamDecl(MAX_CALLING_CONV_REGS + 1)),
@@ -734,6 +752,7 @@ bool BTypeVisitor::VisitFunctionDecl(FunctionDecl *D) {
                == rewriter_.getSourceMgr().getMainFileID()) {
     // rewritable functions that are static should be always treated as helper
     rewriter_.InsertText(real_start_loc, "__attribute__((always_inline))\n");
+    current_fn_ = D->getName();
   }
   return true;
 }
@@ -779,15 +798,22 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
         }
         string fd = to_string(desc->second.fd >= 0 ? desc->second.fd : desc->second.fake_fd);
         string prefix, suffix;
-        string txt;
+        string txt, map_ref;
+        // Functions for Linux loader must reference maps to produce correct
+        // relocation sections; functions for bcc must use bpf_pseudo_fd.
+        if (current_fn_.find("fake__") != string::npos)
+          map_ref = "bpf_pseudo_fd(1, " + fd + ")";
+        else
+          map_ref = "&" + Ref->getDecl()->getName().str() + "_def";
+
         auto rewrite_start = GET_BEGINLOC(Call);
         auto rewrite_end = GET_ENDLOC(Call);
         if (memb_name == "lookup_or_init" || memb_name == "lookup_or_try_init") {
           string name = Ref->getDecl()->getName();
           string arg0 = rewriter_.getRewrittenText(expansionRange(Call->getArg(0)->getSourceRange()));
           string arg1 = rewriter_.getRewrittenText(expansionRange(Call->getArg(1)->getSourceRange()));
-          string lookup = "bpf_map_lookup_elem_(bpf_pseudo_fd(1, " + fd + ")";
-          string update = "bpf_map_update_elem_(bpf_pseudo_fd(1, " + fd + ")";
+          string lookup = "bpf_map_lookup_elem_(" + map_ref;
+          string update = "bpf_map_update_elem_(" + map_ref;
           txt  = "({typeof(" + name + ".leaf) *leaf = " + lookup + ", " + arg0 + "); ";
           txt += "if (!leaf) {";
           txt += " " + update + ", " + arg0 + ", " + arg1 + ", BPF_NOEXIST);";
@@ -807,8 +833,8 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
 
           }
 
-          string lookup = "bpf_map_lookup_elem_(bpf_pseudo_fd(1, " + fd + ")";
-          string update = "bpf_map_update_elem_(bpf_pseudo_fd(1, " + fd + ")";
+          string lookup = "bpf_map_lookup_elem_(" + map_ref;
+          string update = "bpf_map_update_elem_(" + map_ref;
           txt  = "({ typeof(" + name + ".key) _key = " + arg0 + "; ";
           txt += "typeof(" + name + ".leaf) *_leaf = " + lookup + ", &_key); ";
 
@@ -824,7 +850,7 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
           string arg0 = rewriter_.getRewrittenText(expansionRange(Call->getArg(0)->getSourceRange()));
           string args_other = rewriter_.getRewrittenText(expansionRange(SourceRange(GET_BEGINLOC(Call->getArg(1)),
                                                            GET_ENDLOC(Call->getArg(2)))));
-          txt = "bpf_perf_event_output(" + arg0 + ", bpf_pseudo_fd(1, " + fd + ")";
+          txt = "bpf_perf_event_output(" + arg0 + ", " + map_ref;
           txt += ", CUR_CPU_IDENTIFIER, " + args_other + ")";
 
           // e.g.
@@ -849,8 +875,7 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
           string meta = rewriter_.getRewrittenText(expansionRange(Call->getArg(2)->getSourceRange()));
           string meta_len = rewriter_.getRewrittenText(expansionRange(Call->getArg(3)->getSourceRange()));
           txt = "bpf_perf_event_output(" +
-            skb + ", " +
-            "bpf_pseudo_fd(1, " + fd + "), " +
+            skb + ", " + map_ref + ", " +
             "((__u64)" + skb_len + " << 32) | BPF_F_CURRENT_CPU, " +
             meta + ", " +
             meta_len + ");";
@@ -859,7 +884,7 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
             string arg0 =
                 rewriter_.getRewrittenText(expansionRange(Call->getArg(0)->getSourceRange()));
             txt = "bcc_get_stackid(";
-            txt += "bpf_pseudo_fd(1, " + fd + "), " + arg0;
+            txt += map_ref + ", " + arg0;
             rewrite_end = GET_ENDLOC(Call->getArg(0));
             } else {
               error(GET_BEGINLOC(Call), "get_stackid only available on stacktrace maps");
@@ -906,7 +931,7 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
             error(GET_BEGINLOC(Call), "invalid bpf_table operation %0") << memb_name;
             return false;
           }
-          prefix += "((void *)bpf_pseudo_fd(1, " + fd + "), ";
+          prefix += "((void *)" + map_ref + ", ";
 
           txt = prefix + args + suffix;
         }
@@ -935,6 +960,12 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
         vector<string> args;
         for (auto arg : Call->arguments())
           args.push_back(rewriter_.getRewrittenText(expansionRange(arg->getSourceRange())));
+
+        // Appropriate name is needed for bpf_readarg helpers.
+        string func_name = current_prog_;
+        size_t pos = func_name.find("__fake__");
+        if (pos != string::npos)
+          func_name.replace(pos, 8, "");
 
         string text;
         if (Decl->getName() == "incr_cksum_l3") {
@@ -966,14 +997,14 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
           rewriter_.ReplaceText(expansionRange(Call->getSourceRange()), text);
         } else if (Decl->getName() == "bpf_usdt_readarg_p") {
           text = "({ u64 __addr = 0x0; ";
-          text += "_bpf_readarg_" + current_fn_ + "_" + args[0] + "(" +
+          text += "_bpf_readarg_" + func_name + "_" + args[0] + "(" +
                   args[1] + ", &__addr, sizeof(__addr));";
           text += "bpf_probe_read(" + args[2] + ", " + args[3] +
                   ", (void *)__addr);";
           text += "})";
           rewriter_.ReplaceText(expansionRange(Call->getSourceRange()), text);
         } else if (Decl->getName() == "bpf_usdt_readarg") {
-          text = "_bpf_readarg_" + current_fn_ + "_" + args[0] + "(" + args[1] +
+          text = "_bpf_readarg_" + func_name + "_" + args[0] + "(" + args[1] +
                  ", " + args[2] + ", sizeof(*(" + args[2] + ")))";
           rewriter_.ReplaceText(expansionRange(Call->getSourceRange()), text);
         }
@@ -1141,7 +1172,9 @@ int64_t BTypeVisitor::getFieldValue(VarDecl *Decl, FieldDecl *FDecl, int64_t Ori
 bool BTypeVisitor::VisitVarDecl(VarDecl *Decl) {
   const RecordType *R = Decl->getType()->getAs<RecordType>();
   if (SectionAttr *A = Decl->getAttr<SectionAttr>()) {
-    if (!A->getName().startswith("maps"))
+    // We want to skip anything that is not a map section for bcc,
+    // including the maps section for the Linux loader.
+    if (!A->getName().startswith("maps") || A->getName() == "maps")
       return true;
     if (!R) {
       error(GET_ENDLOC(Decl), "invalid type for bpf_table, expect struct");
