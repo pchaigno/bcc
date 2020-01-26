@@ -406,7 +406,7 @@ int BPFModule::write_object_to_disk(Module &mod, const char *filepath) {
 
   legacy::PassManager pass;
   auto FileType = TargetMachine::CGFT_ObjectFile;
-  if (TheTargetMachine->addPassesToEmitFile(pass, dest, FileType)) {
+  if (TheTargetMachine->addPassesToEmitFile(pass, dest, NULL, FileType)) {
     errs() << "TargetMachine can't emit a file of this type";
     return 1;
   }
